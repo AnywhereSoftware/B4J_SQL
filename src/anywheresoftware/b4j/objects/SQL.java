@@ -24,7 +24,7 @@ import anywheresoftware.b4a.BA.ShortName;
 import anywheresoftware.b4a.BA.Version;
 import anywheresoftware.b4a.objects.collections.List;
 
-@Version(1.30f)
+@Version(1.50f)
 @Events(values={"QueryComplete (Success As Boolean, Crsr As ResultSet)",
 "NonQueryComplete (Success As Boolean)", "Ready (Success As Boolean)"})
 @ShortName("SQL")
@@ -34,7 +34,7 @@ public class SQL implements CheckForReinitialize{
 	@Hide
 	public static final int THREAD_LOCK_TIMEOUT = 60000;
 	private ReentrantLock sqliteLock;
-	private volatile ArrayList<Object[]> nonQueryStatementsList = new ArrayList<Object[]>();
+	private volatile ArrayList<Object[]> nonQueryStatementsList;
 
 	/**
 	 * Initializes the SQL object. You also need to add the JDBC driver jar to your project with the #AdditionalJar attribute.
@@ -54,6 +54,14 @@ public class SQL implements CheckForReinitialize{
 			throw new RuntimeException("Class not found: " + DriverClass + "\nAre you missing an #AdditionalJar attribute setting?");
 		}
 		connection = DriverManager.getConnection(JdbcUrl, UserName, Password);
+		nonQueryStatementsList  = new ArrayList<Object[]>();
+	}
+	private static SQL cloneMe(SQL sql) {
+		SQL ret = new SQL();
+		ret.connection = sql.connection;
+		ret.nonQueryStatementsList = sql.nonQueryStatementsList;
+		ret.sqliteLock = sql.sqliteLock;
+		return ret;
 	}
 	/**
 	 * Asynchronously initializes the SQL connection. The Ready event will be raised when the connection is ready or if an error has occurred.
@@ -205,15 +213,12 @@ public class SQL implements CheckForReinitialize{
 	 *The statements are (asynchronously) executed when you call ExecNonQueryBatch.
 	 *Args parameter can be Null if it is not needed.
 	 *Example:<code>
-	 *For i = 1 To 10000
-	 *		sql1.AddNonQueryToBatch("INSERT INTO table1 VALUES (?)", Array As Object(Rnd(0, 100000)))
+	 *For i = 1 To 1000
+	 *	sql.AddNonQueryToBatch("INSERT INTO table1 VALUES (?)", Array(Rnd(0, 100000)))
 	 *Next
-	 *sql1.ExecNonQueryBatch("SQL")
-	 *...	
-	 *Sub SQL_NonQueryComplete (Success As Boolean)
-	 *	Log("NonQuery: " & Success)
-	 *	If Success = False Then Log(LastException)
-	 *End Sub</code>
+	 *Dim SenderFilter As Object = sql.ExecNonQueryBatch("SQL")
+	 *Wait For (SenderFilter) SQL_NonQueryComplete (Success As Boolean)
+	 *Log("NonQuery: " & Success)</code>
 	 */
 	public void AddNonQueryToBatch(String Statement, List Args) {
 		nonQueryStatementsList.add(new Object[] {Statement, Args});
@@ -223,10 +228,19 @@ public class SQL implements CheckForReinitialize{
 	 *The NonQueryComplete event is raised after the statements are completed.
 	 *You should call AddNonQueryToBatch one or more times before calling this method to add statements to the batch.
 	 *Note that this method internally begins and ends a transaction.
+	 *Returns an object that can be used as the sender filter for Wait For calls.
+	 *Example:<code>
+	 *For i = 1 To 1000
+	 *	sql.AddNonQueryToBatch("INSERT INTO table1 VALUES (?)", Array(Rnd(0, 100000)))
+	 *Next
+	 *Dim SenderFilter As Object = sql.ExecNonQueryBatch("SQL")
+	 *Wait For (SenderFilter) SQL_NonQueryComplete (Success As Boolean)
+	 *Log("NonQuery: " & Success)</code>
 	 */
-	public void ExecNonQueryBatch(final BA ba, final String EventName) {
+	public Object ExecNonQueryBatch(final BA ba, final String EventName) {
 		final ArrayList<Object[]> myList = nonQueryStatementsList;
 		nonQueryStatementsList = new ArrayList<Object[]>();
+		final SQL ret = SQL.cloneMe(this);
 		BA.submitRunnable(new Runnable() {
 
 			@Override
@@ -238,7 +252,7 @@ public class SQL implements CheckForReinitialize{
 							ExecNonQuery2((String)o[0], (List)o[1]);
 						}
 						TransactionSuccessful();
-						ba.raiseEventFromDifferentThread(SQL.this, null, 0, EventName.toLowerCase(BA.cul) + "_nonquerycomplete",
+						ba.raiseEventFromDifferentThread(ret, null, 0, EventName.toLowerCase(BA.cul) + "_nonquerycomplete",
 								true, new Object[] {true});
 					} catch (Exception e) {
 						e.printStackTrace();
@@ -248,14 +262,53 @@ public class SQL implements CheckForReinitialize{
 							e1.printStackTrace();
 						}
 						ba.setLastException(e);
-						ba.raiseEventFromDifferentThread(SQL.this, null, 0, EventName.toLowerCase(BA.cul) + "_nonquerycomplete",
+						ba.raiseEventFromDifferentThread(ret, null, 0, EventName.toLowerCase(BA.cul) + "_nonquerycomplete",
 								true, new Object[] {false});
 					}
 				}
 			}
 
 		}, null, 0);
+		return ret;
 	}
+	
+	/**
+	 * Asynchronously executes the given query. The QueryComplete event will be raised when the results are ready.
+	 *Returns an object that can be used as the sender filter for Wait For calls.
+	 *Example:<code>
+	 *Dim SenderFilter As Object = sql.ExecQueryAsync("SQL", "SELECT * FROM table1", Null)
+	 *Wait For (SenderFilter) SQL_QueryComplete (Success As Boolean, rs As ResultSet)
+	 *If Success Then
+	 *	Do While rs.NextRow
+	 *		Log(rs.GetInt2(0))
+	 *	Loop
+	 *	rs.Close
+	 *Else
+	 *	Log(LastException)
+	 *End If</code>
+	 */
+	public Object ExecQueryAsync(final BA ba, final String EventName, final String Query, final List Args) {
+		final SQL ret = SQL.cloneMe(this);
+		BA.submitRunnable(new Runnable() {
+
+			@Override
+			public void run() {
+				try {
+					ResultSetWrapper c = ExecQuery2(Query, Args);
+					ba.raiseEventFromDifferentThread(ret, null, 0, EventName.toLowerCase(BA.cul) + "_querycomplete",
+							true, new Object[] {true, c});
+				} catch (Exception e) {
+					e.printStackTrace();
+					ba.setLastException(e);
+					ba.raiseEventFromDifferentThread(ret, null, 0, EventName.toLowerCase(BA.cul) + "_querycomplete",
+							true, new Object[] {false, AbsObjectWrapper.ConvertToWrapper(new ResultSetWrapper(), null)});
+				}
+			}
+
+		}, this, 0);
+		return ret;
+	}
+	
 	/**
 	 * Executes the query and returns a cursor which is used to go over the results.
 	 *Example:<code>
@@ -315,40 +368,7 @@ public class SQL implements CheckForReinitialize{
 		ResultSetWrapper.closePS.put(rs.getObject(), cs);
 		return rs;
 	}
-	/**
-	 * Asynchronously executes the given query. The QueryComplete event will be raised when the results are ready.
-	 *Example:<code>
-	 *sql1.ExecQueryAsync("SQL", "SELECT * FROM table1", Null)
-	 *...
-	 *Sub SQL_QueryComplete (Success As Boolean, Crsr As ResultSet)
-	 *	If Success Then
-	 *		Do While Crsr.Next
-	 *			Log(Crsr.GetInt2(0))
-	 *		Loop
-	 *	Else
-	 *		Log(LastException)
-	 *	End If
-	 *End Sub</code>
-	 */
-	public void ExecQueryAsync(final BA ba, final String EventName, final String Query, final List Args) {
-		BA.submitRunnable(new Runnable() {
-
-			@Override
-			public void run() {
-				try {
-					ResultSetWrapper c = ExecQuery2(Query, Args);
-					ba.raiseEventFromDifferentThread(SQL.this, null, 0, EventName.toLowerCase(BA.cul) + "_querycomplete",
-							true, new Object[] {true, c});
-				} catch (Exception e) {
-					e.printStackTrace();
-					ba.setLastException(e);
-					ba.raiseEventFromDifferentThread(SQL.this, null, 0, EventName.toLowerCase(BA.cul) + "_querycomplete",
-							true, new Object[] {false, AbsObjectWrapper.ConvertToWrapper(new ResultSetWrapper(), null)});
-				}
-			}
-
-		}, this, 0);
-	}
+	
 	/**
 	 * Executes the query and returns the value in the first column and the first row (in the result set).
 	 *Returns Null if no results were found.
