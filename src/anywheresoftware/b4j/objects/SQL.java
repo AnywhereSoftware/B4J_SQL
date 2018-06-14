@@ -33,6 +33,7 @@ public class SQL implements CheckForReinitialize{
 	public Connection connection;
 	@Hide
 	public static final int THREAD_LOCK_TIMEOUT = 60000;
+	public int queryTimeOut=30; //second
 	private ReentrantLock sqliteLock;
 	private volatile ArrayList<Object[]> nonQueryStatementsList;
 
@@ -192,6 +193,7 @@ public class SQL implements CheckForReinitialize{
 	 */
 	public void ExecNonQuery2(String Statement, List Args) throws SQLException {
 		PreparedStatement ps = connection.prepareStatement(Statement);
+		ps.setQueryTimeout(queryTimeOut);
 		try {
 			int numArgs = Args.IsInitialized() == false ? 0 : Args.getSize();
 			for (int i = 0; i < numArgs; i++) {
@@ -334,6 +336,7 @@ public class SQL implements CheckForReinitialize{
 	public ResultSetWrapper ExecQuery2(String Query, List Args) throws SQLException {
 		checkNull();
 		PreparedStatement ps = connection.prepareStatement(Query);
+		ps.setQueryTimeout(queryTimeOut);
 		if (Args != null && Args.IsInitialized()) {
 			for (int i = 0;i < Args.getSize();i++) {
 				ps.setObject(i + 1, Args.Get(i));
@@ -350,6 +353,7 @@ public class SQL implements CheckForReinitialize{
 	public Object CreateCallStatement(String Query, List Args) throws SQLException {
 		checkNull();
 		CallableStatement cs = connection.prepareCall(Query);
+		cs.setQueryTimeout(queryTimeOut);
 		if (Args != null && Args.IsInitialized()) {
 			for (int i = 0;i < Args.getSize();i++) {
 				cs.setObject(i + 1, Args.Get(i));
@@ -363,6 +367,7 @@ public class SQL implements CheckForReinitialize{
 	public ResultSetWrapper ExecCall(Object CallStatement) throws SQLException {
 		checkNull();
 		CallableStatement cs = (CallableStatement)CallStatement;
+		cs.setQueryTimeout(queryTimeOut);
 		ResultSetWrapper rs = new ResultSetWrapper();
 		rs.setObject(cs.executeQuery());
 		ResultSetWrapper.closePS.put(rs.getObject(), cs);
@@ -455,6 +460,7 @@ public class SQL implements CheckForReinitialize{
 		if (sqliteLock != null && sqliteLock.isHeldByCurrentThread())
 			releaseLock();
 		if (connection != null && connection.isClosed() == false)
+			connection.commit();
 			connection.close();
 	}
 
